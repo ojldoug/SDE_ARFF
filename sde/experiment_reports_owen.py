@@ -207,69 +207,83 @@ def plot_parameter_functions(apx_drift_diffusivity, true_drift_diffusivity,
     return fig, ax
 
 
-def histogram_data(drift_diffusivity, step_size, time, n_dimensions, random_seed, xlim, plim=None, coupled_func=None, non_square_diff=False):
+def histogram_data(drift_diffusivity, step_size, time, n_dimensions, random_seed, ylim, plim=None, coupled_func=None):
 
     rng = np.random.default_rng(random_seed)
-
-    #input_dimensions = xlim.shape[0] + (plim.shape[0] if plim is not None else 0)
     
     # Parameters
     sim_No = 10000
     active_indices = np.arange(sim_No)
-    
     I = int(time / step_size)  # Number of time steps
-    X = np.zeros((sim_No, xlim.shape[0], I + 1))  # Array to store all simulations
-    if plim is not None: P = = np.zeros((sim_No, plim.shape[0], I + 1))
+
+    # Array to store all simulations
+    if plim is None: 
+        xlim = ylim
+    else:
+        xlim = np.concatenate([ylim, plim], axis=0)
+    X = np.zeros((sim_No, xlim.shape[0], I + 1))  
     
     # Initialize starting points 
-    X[:, :, 0] = rng.uniform(xlim[:, 0], xlim[:, 1], size=(sim_No, input_dimensions))
-
+    X[:, :, 0] = rng.uniform(xlim[:, 0], xlim[:, 1], size=(sim_No, xlim.shape[0]))
+    #print(I)
     # Simulate all paths simultaneously
     for i in range(I):
+        #print(i)
         X_active = X[active_indices, :, i]
 
-        outlier_mask = ((X_active <= xlim[:, 0]) | (X_active >= xlim[:, 1])).any(axis=1)
+        #print('first', X_active)
+        # perform coupled equation e.g p1 = p0 + h*x0
+        if plim is not None:
+            Y_active = X_active[:, :ylim.shape[0]]
+            P_active = X_active[:, -plim.shape[0]:]
+            P_active = coupled_func(Y_active, P_active, step_size)
+            X_active[:, -plim.shape[0]:] = P_active
+            X[active_indices, -plim.shape[0]:, i + 1] = P_active
+
+        #print('second', X_active)
+        
+        # if Type == "coupled":
+        #     X_active_ = X_active[~outliers]
+        #     X_active_[:, 1] += X_active_[:, 0]*step_size
+        #     X[active_indices, 1, i + 1] = X_active_[:, 1]
+
+        # get euler-maruyama components
+        dW = rng.normal(loc=0, scale=np.sqrt(step_size), size=(len(active_indices), n_dimensions))
+        drift_, diff_ = drift_diffusivity(X_active, None)
+        drift_ = drift_.reshape(-1, n_dimensions)          
+        diff_ = diff_.reshape(-1, n_dimensions, n_dimensions)
+        
+        if plim is None:
+            X[active_indices, :, i + 1] = X_active + step_size * drift_ + np.einsum('ijk,ik->ij', diff_, dW)
+        else:
+            X[active_indices, :ylim.shape[0], i + 1] = (X_active[:, :ylim.shape[0]] + step_size * drift_ + np.einsum('ijk,ik->ij', diff_, dW))
+        
+        # if Type == "coupled":            
+        #     X[active_indices, 0, i + 1] = (X_active_[:, 0].reshape(-1, 1) + step_size * drift_ + np.einsum('ijk,ik->ij', diff_, dW)).reshape(-1)
+        # else:
+        #     X[active_indices, :ylim.shape[0], i + 1] = X_active[~outliers] + step_size * drift_ + np.einsum('ijk,ik->ij', diff_, dW)
+
+
+        outlier_mask = ((X[active_indices, :, i + 1] <= xlim[:, 0]) | (X[active_indices, :, i + 1] >= xlim[:, 1])).any(axis=1)
     
         # Mark outliers as NaN for all future steps
-        X[active_indices[outlier_mask], :, i:] = np.NaN
+        X[active_indices[outlier_mask], :, (i+1):] = np.NaN
     
         # Update the active set
-        active_indices = active_indices[~outliers]
+        active_indices = active_indices[~outlier_mask]
         if len(active_indices) == 0:
             break
 
-        X_valid = X[active_indices, :, i]
-        
-        # x1 = x0 + v0*h
-        if coupled_func is not None:
-            P_active = 
-        
-        if Type == "coupled":
-            X_active_ = X_active[~outliers]
-            X_active_[:, 1] += X_active_[:, 0]*step_size
-            X[active_indices, 1, i + 1] = X_active_[:, 1]
-            
-        dW = rng.normal(loc=0, scale=np.sqrt(step_size), size=(len(active_indices), n_dimensions))
-        drift_, diff_ = drift_diffusivity(X_active[~outliers], p_data)
-        drift_ = drift_.reshape(-1, n_dimensions)
-        if non_square_diff:
-            diff_new = np.zeros((len(active_indices), n_dimensions, n_dimensions))
-            indices = np.arange(n_dimensions)
-            diff_new[:, indices, indices] = diff_
-            diff_ = diff_new
-        else:            
-            diff_ = diff_.reshape(-1, n_dimensions, n_dimensions)
-        
-        
-        if Type == "coupled":            
-            X[active_indices, 0, i + 1] = (X_active_[:, 0].reshape(-1, 1) + step_size * drift_ + np.einsum('ijk,ik->ij', diff_, dW)).reshape(-1)
-        else:
-            X[active_indices, :, i + 1] = X_active[~outliers] + step_size * drift_ + np.einsum('ijk,ik->ij', diff_, dW)
-
+    
     return X
 
 
-def plot_histogram(X, xlim, step_size):
+def plot_histogram(X, step_size, ylim, plim=None):
+    if plim is None: 
+        xlim = ylim
+    else:
+        xlim = np.concatenate([ylim, plim], axis=0)
+        
     sim_No, dim, I = X.shape
     Y = np.tile(np.arange(I), sim_No)
 
