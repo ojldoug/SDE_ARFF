@@ -122,7 +122,7 @@ class SDEARFFTrain:
         drift_ = (SDEARFFTrain.beta(x_norm, self.omega_drift, self.amp_drift) * self.z_std + self.z_mean)
         return drift_
 
-    def drift_diffusion(self, x, _):
+    def drift_diffusion(self, x):
         return SDEARFFTrain.drift(self, x), SDEARFFTrain.diff(self, x)
 
     def get_diff_vectors(self, y_n, y_np1, x, step_sizes):
@@ -406,10 +406,10 @@ class SDEARFFTrain:
 
         # plot trained drift/diffusion
         func = getattr(SDEARFFTrain, name)
-        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)))
+        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)), label="Trained")
 
         # plot actual drift/diffusion
-        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)))
+        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)), label="True")
 
         # set labels
         ax[0].set_ylabel(r'$f(x_0)$', fontsize=12)
@@ -417,6 +417,12 @@ class SDEARFFTrain:
         ax[0].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[1].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[2].set_xlabel(r'$x_0$', fontsize=12)
+
+        ax[0].set_title('Training Data', fontsize=12)
+        ax[1].set_title('Intermediate', fontsize=12)
+        ax[2].set_title('Trained and True', fontsize=12)
+
+        ax[2].legend()
 
         plt.show()
 
@@ -517,7 +523,7 @@ class MeanMinLoss:
     def integrand(*args):
         step_size = args[-2]
         true_diffusion = args[-1]
-        x = args[:-2]
+        x = x = np.array(args[:-2])
         diffusion = true_diffusion(x)
         if diffusion.ndim == 1:
             diffusion = diffusion[:, np.newaxis, np.newaxis]

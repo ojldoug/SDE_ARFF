@@ -10,7 +10,6 @@ import time
 from matplotlib.colors import Normalize
 from multiprocessing import Pool
 from scipy.linalg import sqrtm
-from scipy.integrate import nquad
 from numpy.linalg import cholesky
 
 tfd = tfp.distributions
@@ -122,7 +121,7 @@ class SDEARFFTrain:
         drift_ = (SDEARFFTrain.beta(x_norm, self.omega_drift, self.amp_drift) * self.z_std + self.z_mean)
         return drift_
 
-    def drift_diffusion(self, x, _):
+    def drift_diffusion(self, x):
         return SDEARFFTrain.drift(self, x), SDEARFFTrain.diff(self, x)
 
     def get_diff_vectors(self, y_n, y_np1, x, step_sizes):
@@ -406,10 +405,10 @@ class SDEARFFTrain:
 
         # plot trained drift/diffusion
         func = getattr(SDEARFFTrain, name)
-        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)))
+        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)), label="Trained")
 
         # plot actual drift/diffusion
-        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)))
+        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)), label="True")
 
         # set labels
         ax[0].set_ylabel(r'$f(x_0)$', fontsize=12)
@@ -417,6 +416,12 @@ class SDEARFFTrain:
         ax[0].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[1].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[2].set_xlabel(r'$x_0$', fontsize=12)
+
+        ax[0].set_title('Training Data', fontsize=12)
+        ax[1].set_title('Intermediate', fontsize=12)
+        ax[2].set_title('Trained and True', fontsize=12)
+
+        ax[2].legend()
 
         plt.show()
 
@@ -512,34 +517,6 @@ class SDEARFFTrain:
         plt.show()
 
 
-class MeanMinLoss:
-    @staticmethod
-    def integrand(*args):
-        step_size = args[-2]
-        true_diffusion = args[-1]
-        x = args[:-2]
-        diffusion = true_diffusion(x)
-        if diffusion.ndim == 1:
-            diffusion = diffusion[:, np.newaxis, np.newaxis]
-
-        diffusion_squared = np.dot(diffusion, diffusion.T)
-        scaled_matrix = step_size * diffusion_squared
-        determinant = np.linalg.det(scaled_matrix)
-        return np.log(np.abs(determinant))
-
-    @staticmethod
-    def get_MML(true_diffusion, n_dimensions, n_pts, validation_split, xlim, step_size, input_dimensions=None):
-        if input_dimensions == None:
-            input_dimensions = n_dimensions
-
-        bounds = [(xlim[i, 0], xlim[i, 1]) for i in range(input_dimensions)]
-        integral_result, _ = nquad(MeanMinLoss.integrand, bounds, args=(step_size, true_diffusion))
-
-        domain_volume = np.prod([xlim[i, 1] - xlim[i, 0] for i in range(input_dimensions)])
-        MML = 0.5 * integral_result / domain_volume + 0.5 * n_dimensions * (1 + np.log(2 * np.pi))
-
-        SD = np.sqrt(0.5 * n_dimensions / (n_pts*(1 - validation_split)))
-        SD_val = np.sqrt(0.5 * n_dimensions / (n_pts*validation_split))
-        return MML, SD, SD_val
+    
 
 
