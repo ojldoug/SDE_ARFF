@@ -12,37 +12,39 @@ from sde.sde_learning_network import \
 )
 
 
-def sample_data(drift_diffusivity, step_size, n_dimensions, low, high, n_pts, rng,
-                n_subsample=10, param_low=None, param_high=None):
-    x_data = rng.uniform(low=low, high=high, size=(n_pts, n_dimensions))
-    if param_high is not None:
-        n_param = np.atleast_1d(param_high).shape[0]
-        p_data = rng.uniform(low=param_low, high=param_high, size=(n_pts, n_param))
-        y_data = x_data.copy()
-        for k in range(n_subsample):
-            y_data = np.row_stack([
-                    SDEIntegrators.euler_maruyama(y_data[k, :],
-                                                  step_size / n_subsample,
-                                                  drift_diffusivity,
-                                                  rng,
-                                                  p_data[k, :])
-                    for k in range(x_data.shape[0])
-            ])
-
-        return x_data, y_data, p_data
+def euler_maruyama_batch(drift_diffusion, step_size, rng, yk, pk=None):
+    if pk is not None:
+        xk = np.concatenate([yk, pk], axis=1)
     else:
-        y_data = x_data.copy()
-        for k in range(n_subsample):
-            y_data = np.row_stack([
-                    SDEIntegrators.euler_maruyama(y_data[k, :],
-                                                  step_size / n_subsample,
-                                                  drift_diffusivity,
-                                                  rng,
-                                                  None)
-                    for k in range(x_data.shape[0])
-            ])
+        xk = yk
 
-        return x_data, y_data
+    dW = rng.normal(loc=0, scale=np.sqrt(step_size), size=yk.shape)
+    fk, sk = drift_diffusion(xk)  # expect fk: (N, d), sk: (N, d) or (N, d, d)
+
+    if sk.ndim == 2: # if (N, d) not (N, d, d) 
+        skW = sk * dW 
+    else:
+        skW = np.einsum('nij,nj->ni', sk, dW)
+
+    return yk + step_size * fk + skW
+
+
+def sample_data(drift_diffusion, step_size, n_pts, n_subsample, rng, ylim, plim=None):
+    y_np_data = rng.uniform(low=ylim[:,0], high=ylim[:,1], size=(n_pts, ylim.shape[0]))
+    y_np1_data = y_np_data.copy()
+
+    if plim is not None:
+        p_data = rng.uniform(low=plim[:,0], high=plim[:,1], size=(n_pts, plim.shape[0]))
+    else:
+        p_data = None
+
+    for _ in range(n_subsample):
+        y_np1_data = euler_maruyama_batch(drift_diffusion, step_size / n_subsample, rng, y_np1_data, p_data)
+
+    return y_np_data, y_np1_data, p_data
+
+
+
 
 
 class PlotResults:
@@ -222,7 +224,7 @@ class PlotResults:
             fig.savefig(output_path, dpi=300, bbox_inches='tight')
 
     @staticmethod
-    def histogram_data(drift_diffusivity, step_size, time, rng, ylim, plim, coupled_func, sim_No):
+    def histogram_data(drift_diffusion, step_size, time, rng, ylim, plim, coupled_func, sim_No):
         
         # Parameters
         active_indices = np.arange(sim_No)
@@ -252,7 +254,7 @@ class PlotResults:
     
             # get euler-maruyama components
             dW = rng.normal(loc=0, scale=np.sqrt(step_size), size=(len(active_indices), ylim.shape[0]))
-            drift_, diff_ = drift_diffusivity(X_active)
+            drift_, diff_ = drift_diffusion(X_active)
             drift_ = drift_.reshape(-1, ylim.shape[0])          
             diff_ = diff_.reshape(-1, ylim.shape[0], ylim.shape[0])
             
@@ -273,8 +275,8 @@ class PlotResults:
     
         return X
     
-    def plot_histogram(self, drift_diffusivity, step_size, time, rng, ylim, plim=None, coupled_func=None, sim_No=10000, name=None, save=False):
-        X = PlotResults.histogram_data(drift_diffusivity, step_size, time, rng, ylim, plim, coupled_func, sim_No)
+    def plot_histogram(self, drift_diffusion, step_size, time, rng, ylim, plim=None, coupled_func=None, sim_No=10000, name=None, save=False):
+        X = PlotResults.histogram_data(drift_diffusion, step_size, time, rng, ylim, plim, coupled_func, sim_No)
         
         if plim is None: 
             xlim = ylim
@@ -321,10 +323,7 @@ class PlotResults:
             fig.savefig(output_path, dpi=300, bbox_inches='tight')
             plt.close(fig)
 
-
-    
-    
-    def loss_stats(TT, VL, save=False):
+    def loss_stats(self, TT, VL, save=False):
         # Calculate the mean
         mean_TT = np.mean(TT)
         mean_VL = np.mean(VL)
@@ -353,8 +352,13 @@ class PlotResults:
             yerr=[[std_VL_below], [std_VL_above]],  # Non-symmetrical y error
             fmt='x', color='red', ecolor='black', elinewidth=1.5, capsize=4, label='Mean ± STD'
         )
+
+        plt.ylabel("Min Loss")
+        plt.xlabel("Training Time (s)")
         plt.show()
-    
+
+        print("Mean Min Loss: ", mean_VL)
+        print("Mean Training Time: ", mean_TT, "s")
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/loss_v_time_data')
             output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}")

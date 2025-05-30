@@ -9,11 +9,6 @@ import tensorflow_probability as tfp
 import sys
 import numpy as np
 
-import time
-
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
 tfd = tfp.distributions
 
 # For numeric stability, set the default floating-point dtype to float64
@@ -23,15 +18,130 @@ NUMBER_TYPE = tf.float64  # or tf.float32
 STD_MIN_VALUE = 1e-13  # the minimal number that the diffusivity models can have
 
 
-# owens timing code
-class TimingCallback(tf.keras.callbacks.Callback):
-    def on_train_begin(self, logs=None):
-        self.start_time = time.time()  # Record the start time
-        self.epoch_times = []          # Store cumulative elapsed times
+class SDEIntegrators:
+    """
+    Implements the common Euler-Maruyama and Milstein integrator
+    schemes used in integration of SDE.
+    """
 
-    def on_epoch_end(self, epoch, logs=None):
-        elapsed_time = time.time() - self.start_time
-        self.epoch_times.append(elapsed_time)
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def milstein(xn, h, _f_sigma, _sigma_gradient, rng):
+        """
+        Integration method for SDE, order 1 (strong) and 1 (weak) accurate.
+
+        Parameters
+        ----------
+        xn current state
+        h step size
+        _f_sigma a lambda function that accepts a point x and returns a tuple (f(x), sigma(x))
+        _sigma_gradient a lambda function that accepts a point x and returns the gradient of sigma
+        rng a random number generator (e.g. numpy.random.default_rng(1))
+
+        Returns
+        -------
+        x_{n+1}
+
+        """
+        dW1 = rng.normal(loc=0, scale=np.sqrt(h), size=xn.shape)
+        xk = xn.reshape(1, -1)  # we only allow a single point as input
+
+        drift_k, sigma_k = _f_sigma(xk)
+        _sigma_gradient_evaluated = _sigma_gradient(xk)
+
+        if not (np.prod(sigma_k.shape) == xk.shape[1]):
+            raise ValueError("Diffusivity must be diagonal.")
+
+        xnp1 = xk + h * drift_k + sigma_k * dW1 + 0.5 * sigma_k * _sigma_gradient_evaluated * (dW1 ** 2 - h)
+
+        return xnp1
+
+    @staticmethod
+    def euler_maruyama(xn, h, _f_sigma, rng, param=None):
+        """
+        Integration method for SDE, order 1/2 (strong) and 1 (weak) accurate.
+
+        Parameters
+        ----------
+        xn
+        h
+        _f_sigma
+        rng
+        param
+
+        Returns
+        -------
+
+        """
+        dW = rng.normal(loc=0, scale=np.sqrt(h), size=xn.shape)
+        xk = xn.reshape(1, -1)  # we only allow a single point as input
+
+        if param is not None:
+            fk, sk = _f_sigma(xk, param)
+        else:
+            fk, sk = _f_sigma(xk)
+
+        if np.prod(sk.shape) == xk.shape[-1]:
+            skW = sk * dW
+        else:
+            sk = sk.reshape(xk.shape[-1], xk.shape[-1])
+            skW = (sk @ dW.T).T
+        return xk + h * fk + skW
+
+
+class PreTrain(keras.models.Model):
+    """
+    Can be used to test the learning methods by training the network
+    a little with the true functions first.
+    Of course, this is "cheating" - use this ONLY to test if a "correct"
+    network would keep being correct when trained with the EM- and Milstein
+    scheme methods.
+    """
+
+    def __init__(self, true_drift, true_diffusivity,
+                 model: keras.models.Model,
+                 learning_rate=1e-2,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.true_drift = true_drift
+        self.true_diffusivity = true_diffusivity
+        self.model = model
+        self.train_drift = 1
+        self.train_diffusivity = 1
+        self.learning_rate = learning_rate
+
+    def get_config(self):
+        pass
+
+    def _train(self, x_data, **kwargs):
+        self.train_drift = 1
+        self.train_diffusivity = 1
+        self.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss="mse")
+
+        self.fit(x_data, (self.train_drift * self.true_drift(x_data),
+                          self.train_diffusivity * self.true_diffusivity(x_data)),
+                 verbose=0, **kwargs,
+                 callbacks=[LossAndErrorPrintingCallback()])
+
+        self.train_drift = 0
+        self.train_diffusivity = 1
+        self.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss="mse")
+
+        self.fit(x_data, (self.train_drift * self.true_drift(x_data),
+                          self.train_diffusivity * self.true_diffusivity(x_data)),
+                 verbose=0, **kwargs,
+                 callbacks=[LossAndErrorPrintingCallback()])
+
+        self.train_drift = 1
+        self.train_diffusivity = 1
+        self.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss="mse")
+
+    def call(self, inputs):
+        approx_mean, approx_scale = self.model(inputs)
+
+        return approx_mean * self.train_drift, approx_scale * self.train_diffusivity
 
 
 class ModelBuilder:
@@ -192,7 +302,7 @@ class ModelBuilder:
         full_shape = n_dim * n_dim
         step_size_matrix = tf.broadcast_to(tril_step_size, [K.shape(step_size_)[0], full_shape])
         step_size_matrix = tf.reshape(step_size_matrix, (-1, n_dim, n_dim))
-        
+
         # now form the normal distribution
         approx_normal = tfd.MultivariateNormalTriL(
             loc=(yn_ + step_size_ * drift_),
@@ -288,19 +398,96 @@ class SDEIdentification:
         if len(callbacks) == 0:
             callbacks.append(LossAndErrorPrintingCallback())
 
-        timing_callback = TimingCallback()
-
         hist = self.model.fit(x=y_full,
                               epochs=n_epochs,
                               batch_size=batch_size,
                               verbose=0,
                               validation_split=validation_split,
                               callbacks=callbacks)
-        return hist, timing_callback
+        return hist
 
     def drift_diffusivity(self, x, parameters=None):
         drift, std = self.model.call_xn(x, parameters)
         return K.eval(drift), K.eval(std)
+
+    def sample_path(self,
+                    x0,
+                    step_size,
+                    NT,
+                    N_iterates,
+                    map_every_iteration=None,
+                    param0=None,
+                    diffusivity_type="diagonal"):
+        """
+        Use the neural network to sample a path with the Euler Maruyama scheme.
+        """
+        step_size = tf.cast(np.ones((N_iterates, 1)) * np.array(step_size), dtype=NUMBER_TYPE)
+        paths = [np.ones((N_iterates, 1)) @ np.array(x0).reshape(1, -1)]
+        for it in range(NT):
+            x_n = paths[-1]
+            if param0 is not None:
+                apx_mean, apx_scale = self.model.call_xn(tf.concat([x_n, param0], axis=1))
+            else:
+                apx_mean, apx_scale = self.model.call_xn(x_n)
+
+            approx_normal = ModelBuilder.define_normal_distribution(x_n,
+                                                                    step_size,
+                                                                    apx_mean,
+                                                                    apx_scale,
+                                                                    diffusivity_type)
+
+            x_np1 = approx_normal.sample()
+            x_i = keras.backend.eval(x_np1)
+            if not (map_every_iteration is None):
+                x_i = map_every_iteration(x_i)
+            paths.append(x_i)
+        return [
+            np.row_stack([paths[k][i] for k in range(len(paths))])
+            for i in range(N_iterates)
+        ]
+
+    def sample_path_second_order(self,
+                                 x0,
+                                 step_size,
+                                 NT,
+                                 N_iterates,
+                                 map_every_iteration=None,
+                                 param0=None,
+                                 diffusivity_type="diagonal"):
+        """
+        Use the neural network to sample a path with the symplectic Euler Maruyama scheme,
+        for the second order SDE:
+        dx/dt = v
+        dv = f(v,x)dt + sigma(v,x)dW
+        The x coordinates are passed to the networks as parameters.
+        """
+        if param0 is None:
+            print("parameter must be set")
+            return
+
+        step_size = tf.cast(np.ones((N_iterates, 1)) * np.array(step_size), dtype=NUMBER_TYPE)
+        paths = [np.ones((N_iterates, 1)) @ np.column_stack([np.array(param0).reshape(1, -1), np.array(x0).reshape(1, -1)])]
+        for it in range(NT):
+            x_n, v_n = paths[-1][:, :x0.shape[1]], paths[-1][:, x0.shape[1]:]
+            x_np1 = x_n + step_size * v_n
+            predictor_symplectic = np.column_stack([x_np1, v_n])
+            apx_mean, apx_scale = self.model.call_xn(predictor_symplectic)
+
+            approx_normal = ModelBuilder.define_normal_distribution(v_n,
+                                                                    step_size,
+                                                                    apx_mean,
+                                                                    apx_scale,
+                                                                    diffusivity_type)
+
+            v_np1 = approx_normal.sample()
+            v_i = keras.backend.eval(v_np1)
+            if not (map_every_iteration is None):
+                v_i = map_every_iteration(v_i)
+            paths.append(np.column_stack([x_np1, v_i]))
+        return [
+            np.row_stack([paths[k][i] for k in range(len(paths))])
+            for i in range(N_iterates)
+        ]
 
 
 class SDEApproximationNetwork(tf.keras.Model):
@@ -327,7 +514,7 @@ class SDEApproximationNetwork(tf.keras.Model):
         self.n_parameters = n_parameters
         self.diffusivity_type = diffusivity_type
         self.scale_per_point = scale_per_point  # only used if method="milstein approx"
-        
+
         SDEApproximationNetwork.verify(self.method)
 
     @staticmethod
@@ -614,6 +801,7 @@ class SDEApproximationNetwork(tf.keras.Model):
         Expects the input tensor to contain all of (step_sizes, x_k, x_{k+1}).
         """
         step_size, x_n, param_n, x_np1 = SDEApproximationNetwork.split_inputs(inputs, self.step_size, self.n_parameters)
+
         if self.method == "euler":
             log_prob = SDEApproximationNetwork.euler_maruyama_pdf(x_np1, x_n, step_size, self.sde_model,
                                                                   diffusivity_type=self.diffusivity_type,
@@ -624,10 +812,14 @@ class SDEApproximationNetwork(tf.keras.Model):
             log_prob = SDEApproximationNetwork.milstein_forward_approx(x_np1, x_n, step_size, self.sde_model, self.scale_per_point)
         else:
             raise ValueError(self.method + " not available")
+
         sample_distortion = -tf.reduce_mean(log_prob, axis=-1)
         distortion = tf.reduce_mean(sample_distortion)
 
         loss = distortion
+
+        # correct the loss so that it converges to zero regardless of dimension
+        loss = loss + 2 * np.log(2 * np.pi) / np.log(10) * x_n.shape[1]
 
         self.add_loss(loss)
         self.add_metric(distortion, name="distortion", aggregation="mean")
@@ -773,3 +965,93 @@ class VAEModel(tf.keras.Model):
 
         return encoder, decoder, full_model
 
+
+class AEModel(tf.keras.Model):
+    """
+    This is an auto-encoder sde_model that defines a Gaussian process over an encoding space created from x_n,
+    essentially predicting x_np1 through drift and diffusivity over the encoding, not the input.
+    This allows to reduce the dimension of the space, if we are given (too many) observations of an SDE process.
+    """
+
+    def __init__(self,
+                 encoder: tf.keras.Model,
+                 decoder: tf.keras.Model,
+                 latent_sde_model: tf.keras.Model,
+                 step_size=None,
+                 diffusivity_type="diagonal",
+                 method="euler",
+                 n_parameters=0,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.latent_sde_model = latent_sde_model
+        self.step_size = step_size
+        self.diffusivity_type = diffusivity_type
+        self.method = method
+        self.n_parameters = n_parameters
+
+        SDEApproximationNetwork.verify(self.method)
+
+    def get_config(self):
+        return dict(
+            encoder=self.encoder,
+            decoder=self.decoder,
+            step_size=self.step_size,
+            diffusivity_type=self.diffusivity_type,
+            n_parameters=self.n_parameters
+        )
+
+    def call_xn(self, inputs_xn):
+        """
+        Similar to SDEApproximationNetwork.call_xn, calls decoder(encoder(inputs)).
+
+        Parameters
+        ----------
+        inputs x_n points
+
+        Returns
+        -------
+        (drift, diffusivity) tuple, evaluated at x_n
+        """
+        return self.latent_sde_model(self.encoder(inputs_xn))
+
+    def call(self, inputs):
+        """
+        Expects the input tensor to contain all of (step_sizes, x_k, x_{k+1}).
+        """
+        step_size, x_n, x_np1 = SDEApproximationNetwork.split_inputs(inputs, self.step_size, self.n_parameters)
+
+        def full_model(_input):
+            """
+            Needed in addition to call_xn because it has to be converted to a tf.function.
+            Parameters
+            ----------
+            _input
+
+            Returns
+            -------
+
+            """
+            return self.latent_sde_model(self.encoder(_input))
+
+        if self.method == "euler":
+            log_prob = SDEApproximationNetwork.euler_maruyama_pdf(x_np1, x_n, step_size, full_model,
+                                                                  self.diffusivity_type)
+        else:
+            raise ValueError(self.method + " not available in VAEModel")
+
+        # Distortion
+        sample_distortion = tf.reduce_mean(tf.square(x_n - self.decoder(self.encoder(x_n))), axis=-1)
+        distortion = tf.math.log(tf.reduce_mean(sample_distortion))
+        
+        # SDE Distortion
+        sde_sample_distortion = -tf.reduce_mean(log_prob, axis=-1)
+        sde_distortion = tf.reduce_mean(sde_sample_distortion)
+
+        # Add loss and metrics
+        self.add_loss(distortion + sde_distortion)
+        self.add_metric(distortion, name="distortion", aggregation="mean")
+        self.add_metric(sde_distortion, name="sde_distortion", aggregation="mean")
+
+        return x_np1
