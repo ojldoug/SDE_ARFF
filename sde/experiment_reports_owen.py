@@ -365,7 +365,62 @@ class PlotResults:
             with open(output_path, 'w') as file:
                 file.write(f"{mean_TT},{mean_VL},{std_TT_above},{std_TT_below},{std_VL_above},{std_VL_below}\n")
 
+    def loss_v_time(self, TT, VL, save=False):
+        #TT = np.atleast_2d(TT)
+        #VL = np.atleast_2d(VL)
+        N_EPOCHS = TT.shape[1]
+        
+        # Initialize arrays to store results
+        mean_TT = np.mean(TT, axis=0)
+        mean_VL = np.mean(VL, axis=0)
+        std_TT_above = np.zeros(N_EPOCHS)
+        std_TT_below = np.zeros(N_EPOCHS)
+        std_VL_above = np.zeros(N_EPOCHS)
+        std_VL_below = np.zeros(N_EPOCHS)
+        
+        # Iterate over epochs
+        for i in range(N_EPOCHS):
+            TT_ = TT[:, i]
+            VL_ = VL[:, i]
+        
+            # Calculate deviations for training_time
+            TT_above = TT_[TT_ > mean_TT[i]] - mean_TT[i]
+            TT_below = mean_TT[i] - TT_[TT_ < mean_TT[i]]
+            std_TT_above[i] = np.std(np.concatenate((TT_above, -TT_above)))
+            std_TT_below[i] = np.std(np.concatenate((TT_below, -TT_below)))
+        
+            # Calculate deviations for val_loss
+            VL_above = VL_[VL_ > mean_VL[i]] - mean_VL[i]
+            VL_below = mean_VL[i] - VL_[VL_ < mean_VL[i]]
+            std_VL_above[i] = np.std(np.concatenate((VL_above, -VL_above)))
+            std_VL_below[i] = np.std(np.concatenate((VL_below, -VL_below)))
+        
+        plt.errorbar(
+            mean_TT, mean_VL,
+            xerr=[std_TT_below, std_TT_above],  # Non-symmetrical x error
+            yerr=[std_VL_below, std_VL_above],  # Non-symmetrical y error
+            fmt='o', color='red', ecolor='black', elinewidth=1.5, capsize=4, label='Mean ± STD'
+        )
+        
+        plt.xlabel('Mean Training Time')
+        plt.ylabel('Mean Validation Loss')
+        plt.title('Error Bars for Training Time and Validation Loss Across Epochs')
+        plt.legend()
+        plt.grid(True)
     
+        # Optionally save
+        if save:
+            data = pd.DataFrame({
+                "cum_time": mean_TT,
+                "loss": mean_VL,
+                "std_training_time_above": std_TT_above,
+                "std_training_time_below": std_TT_below,
+                "std_loss_above": std_VL_above,
+                "std_loss_below": std_VL_below
+            })
+            output_dir = os.path.join(self.script_dir, 'saved_results/loss_v_time_data')
+            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.csv")
+            data.to_csv(output_path, index=False)
 
 
 
@@ -454,11 +509,11 @@ def integrand(*args):
     return np.log(det)
 
 
-def mean_min_loss(true_diffusion, n_pts, validation_split, step_size, ylim, plim=None):
-    if plim is None: 
+def mean_min_loss(true_diffusion, n_pts, validation_split, step_size, ylim, xlim=None, YinX=True):
+    if xlim is None: 
         xlim = ylim
-    else:
-        xlim = np.concatenate([ylim, plim], axis=0)
+    elif YinX:
+        xlim = np.concatenate([ylim, xlim], axis=0)
 
     bounds = [(xlim[i, 0], xlim[i, 1]) for i in range(xlim.shape[0])]
     integral_result, _ = nquad(integrand, bounds, args=(step_size, true_diffusion))
@@ -472,6 +527,66 @@ def mean_min_loss(true_diffusion, n_pts, validation_split, step_size, ylim, plim
     print('Theoretical mean min loss:', MML)
     print('Loss standard deviation:', SD)
     print('Validation loss standard deviation:', SD_val)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # moving_avg = np.zeros(N_EPOCHS)
+    # min_moving_avg = float('inf')
+    # moving_avg_len = 5
+    # min_index = 0
+    # break_iterations = 5
+    # for j in range(N_EPOCHS):
+    #     if j < moving_avg_len:
+    #         moving_avg[j] = np.mean(val_losses[i,:j+1])
+    #     else:
+    #         moving_avg[j] = np.mean(val_losses[i,j-moving_avg_len+1:j+1])
+
+    #     if moving_avg[j] < min_moving_avg:
+    #         min_moving_avg = moving_avg[j]
+    #         min_index = j
+
+    #     if min_index + break_iterations < j:
+    #         break
+
+    # val_loss_array = val_losses[i,:j]
+    # val_loss_min_index = np.argmin(val_loss_array)
+    # training_time[i] = cumulative_times[i,val_loss_min_index]
+    # val_loss[i] = val_losses[i,val_loss_min_index]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
