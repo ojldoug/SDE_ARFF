@@ -10,7 +10,6 @@ import time
 from matplotlib.colors import Normalize
 from multiprocessing import Pool
 from scipy.linalg import sqrtm
-from scipy.integrate import nquad
 from numpy.linalg import cholesky
 
 tfd = tfp.distributions
@@ -29,7 +28,7 @@ class NNHyperparameters:
 
 class SDEARFFTrain:
     def __init__(self, n_dimensions=1, x_min=None, x_max=None, omega_drift=None, amp_drift=None, z_mean=0, z_std=1,
-                 omega_diff=None, amp_diff=None, diff_std=1, diff_type="diagonal", constant_diff=False, resampling=True):
+                 omega_diff=None, amp_diff=None, diff_std=1, diff_type="diagonal", rng=None, constant_diff=False, resampling=True):
         self.d = n_dimensions
         self.tri = n_dimensions * (n_dimensions + 1) // 2
         self.x_min = x_min
@@ -42,6 +41,7 @@ class SDEARFFTrain:
         self.amp_diff = amp_diff
         self.diff_std = diff_std
         self.diff_type = diff_type
+        self.rng = rng
         self.constant_diff = constant_diff
         self.resampling = resampling
         self.history = {'loss': None, 'val_loss': None, 'true_val_loss': None, 'training_time': None}
@@ -59,13 +59,12 @@ class SDEARFFTrain:
         diff_vectors_norm = diff_vectors / diff_std
         return diff_vectors_norm, diff_std
 
-    @staticmethod
-    def split_data(validation_split, *inputs):
+    def split_data(self, validation_split, *inputs):
         num_samples = inputs[0].shape[0]
         valid_sample_size = int(num_samples * validation_split)
 
         # Generate random indices for the validation set
-        valid_indices = np.random.choice(num_samples, size=valid_sample_size, replace=False)
+        valid_indices = self.rng.choice(num_samples, size=valid_sample_size, replace=False)
 
         # Generate masks to separate training and validation data
         mask = np.ones(num_samples, dtype=bool)
@@ -122,7 +121,7 @@ class SDEARFFTrain:
         drift_ = (SDEARFFTrain.beta(x_norm, self.omega_drift, self.amp_drift) * self.z_std + self.z_mean)
         return drift_
 
-    def drift_diffusion(self, x, _):
+    def drift_diffusion(self, x):
         return SDEARFFTrain.drift(self, x), SDEARFFTrain.diff(self, x)
 
     def get_diff_vectors(self, y_n, y_np1, x, step_sizes):
@@ -266,7 +265,7 @@ class SDEARFFTrain:
     def ARFF_train(self, param, x, y_norm, validation_split):
         start_time = time.time()
         x_norm = (x-self.x_min)/(self.x_max-self.x_min)
-        (x_norm, y_norm), (x_norm_valid, y_norm_valid) = SDEARFFTrain.split_data(validation_split, x_norm, y_norm)
+        (x_norm, y_norm), (x_norm_valid, y_norm_valid) = SDEARFFTrain.split_data(self, validation_split, x_norm, y_norm)
 
         K = param.K
         omega = np.zeros((x.shape[1], K))
@@ -284,14 +283,14 @@ class SDEARFFTrain:
             # resampling
             if self.resampling:
                 amp_pmf = np.linalg.norm(amp, axis=1) / np.sum(np.linalg.norm(amp, axis=1))
-                omega = omega[:, np.random.choice(K, K, p=amp_pmf)]
+                omega = omega[:, self.rng.choice(K, K, p=amp_pmf)]
                 
             # adaptive metropolis
-            omega_prime = omega + param.delta * np.random.normal(0, 1, size=(x.shape[1], K))
+            omega_prime = omega + param.delta * self.rng.normal(0, 1, size=(x.shape[1], K))
             amp_prime = SDEARFFTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega_prime, K)
             for k in range(0, K - 1):
                 D = (np.linalg.norm(amp_prime[k, :]) / np.linalg.norm(amp[k, :])) ** param.gamma
-                if D >= np.random.random():
+                if D >= self.rng.random():
                     amp[k, :] = amp_prime[k, :]
                     omega[:, k] = omega_prime[:, k]        
 
@@ -331,7 +330,7 @@ class SDEARFFTrain:
         elif YinX:
             x = np.concatenate((y_n, x), axis=1)
 
-        (y_n, y_np1, x, step_sizes), (y_n_valid, y_np1_valid, x_valid, step_sizes_valid) = SDEARFFTrain.split_data(validation_split, y_n, y_np1, x, step_sizes.reshape(-1, 1))
+        (y_n, y_np1, x, step_sizes), (y_n_valid, y_np1_valid, x_valid, step_sizes_valid) = SDEARFFTrain.split_data(self, validation_split, y_n, y_np1, x, step_sizes.reshape(-1, 1))
 
         self.x_min = np.min(x, axis=0)
         self.x_max = np.max(x, axis=0)
@@ -406,10 +405,10 @@ class SDEARFFTrain:
 
         # plot trained drift/diffusion
         func = getattr(SDEARFFTrain, name)
-        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)))
+        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)), label="Trained")
 
         # plot actual drift/diffusion
-        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)))
+        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)), label="True")
 
         # set labels
         ax[0].set_ylabel(r'$f(x_0)$', fontsize=12)
@@ -417,6 +416,12 @@ class SDEARFFTrain:
         ax[0].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[1].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[2].set_xlabel(r'$x_0$', fontsize=12)
+
+        ax[0].set_title('Training Data', fontsize=12)
+        ax[1].set_title('Intermediate', fontsize=12)
+        ax[2].set_title('Trained and True', fontsize=12)
+
+        ax[2].legend()
 
         plt.show()
 
@@ -512,34 +517,6 @@ class SDEARFFTrain:
         plt.show()
 
 
-class MeanMinLoss:
-    @staticmethod
-    def integrand(*args):
-        step_size = args[-2]
-        true_diffusion = args[-1]
-        x = args[:-2]
-        diffusion = true_diffusion(x)
-        if diffusion.ndim == 1:
-            diffusion = diffusion[:, np.newaxis, np.newaxis]
-
-        diffusion_squared = np.dot(diffusion, diffusion.T)
-        scaled_matrix = step_size * diffusion_squared
-        determinant = np.linalg.det(scaled_matrix)
-        return np.log(np.abs(determinant))
-
-    @staticmethod
-    def get_MML(true_diffusion, n_dimensions, n_pts, validation_split, xlim, step_size, input_dimensions=None):
-        if input_dimensions == None:
-            input_dimensions = n_dimensions
-
-        bounds = [(xlim[i, 0], xlim[i, 1]) for i in range(input_dimensions)]
-        integral_result, _ = nquad(MeanMinLoss.integrand, bounds, args=(step_size, true_diffusion))
-
-        domain_volume = np.prod([xlim[i, 1] - xlim[i, 0] for i in range(input_dimensions)])
-        MML = 0.5 * integral_result / domain_volume + 0.5 * n_dimensions * (1 + np.log(2 * np.pi))
-
-        SD = np.sqrt(0.5 * n_dimensions / (n_pts*(1 - validation_split)))
-        SD_val = np.sqrt(0.5 * n_dimensions / (n_pts*validation_split))
-        return MML, SD, SD_val
+    
 
 

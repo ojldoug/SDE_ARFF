@@ -443,3 +443,140 @@ class SDEApproximationNetwork(tf.keras.Model):
             x_n = tf.concat([x_n, param_n], axis=1)
         return self.sde_model(x_n)
 
+
+class VAEModel(tf.keras.Model):
+    """
+    This is an auto-encoder sde_model that defines a Gaussian process over an encoding space created from x_n,
+    essentially predicting x_np1 through drift and diffusivity over the encoding, not the input.
+    This allows to reduce the dimension of the space, if we are given (too many) observations of an SDE process.
+    """
+
+    def __init__(self,
+                 encoder: tf.keras.Model,
+                 decoder: tf.keras.Model,
+                 latent_sde_model: tf.keras.Model,
+                 step_size=None,
+                 diffusivity_type="diagonal",
+                 method="euler",
+                 n_parameters=0,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = encoder
+        self.encoder_diffusivity = tf.Variable(initial_value=1e-2, trainable=False, dtype=NUMBER_TYPE)
+        self.decoder = decoder
+        self.latent_sde_model = latent_sde_model
+        self.step_size = step_size
+        self.diffusivity_type = diffusivity_type
+        self.method = method
+        self.n_parameters = n_parameters
+
+        SDEApproximationNetwork.verify(self.method)
+
+    def get_config(self):
+        return dict(
+            encoder=self.encoder,
+            encoder_diffusivity=self.encoder_diffusivity,
+            decoder=self.decoder,
+            step_size=self.step_size,
+            diffusivity_type=self.diffusivity_type
+        )
+
+    def call_xn(self, inputs_xn):
+        """
+        Similar to SDEApproximationNetwork.call_xn, calls decoder(encoder(inputs)).
+
+        Parameters
+        ----------
+        inputs x_n points
+
+        Returns
+        -------
+        (drift, diffusivity) tuple, evaluated at x_n
+        """
+        return self.latent_sde_model(self.encoder(inputs_xn))
+
+    def call(self, inputs):
+        """
+        Expects the input tensor to contain all of (step_sizes, x_k, x_{k+1}).
+        """
+        step_size, x_n, x_np1 = SDEApproximationNetwork.split_inputs(inputs, self.step_size, self.n_parameters)
+
+        # Model distributions in the latent space
+        apx_post_mean = self.encoder(x_n)
+        apx_post = tfd.Independent(tfd.MultivariateNormalDiag(
+            loc=apx_post_mean,
+            scale_diag=None,
+            scale_identity_multiplier=self.encoder_diffusivity,
+            name="apx_post"
+        ), reinterpreted_batch_ndims=0)
+        prior = tfd.Independent(tfd.MultivariateNormalDiag(
+            loc=tf.zeros_like(apx_post_mean),
+            scale_diag=tf.ones_like(apx_post_mean),
+            scale_identity_multiplier=None,
+            name="prior"
+        ), reinterpreted_batch_ndims=0)
+
+        def full_model(_input):
+            """
+            Needed in addition to call_xn because it has to be converted to a tf.function.
+            Parameters
+            ----------
+            _input
+
+            Returns
+            -------
+
+            """
+            return self.latent_sde_model(self.encoder(_input))
+
+        if self.method == "euler":
+            log_prob = SDEApproximationNetwork.euler_maruyama_pdf(x_np1, x_n, step_size, full_model,
+                                                                  self.diffusivity_type)
+        else:
+            raise ValueError(self.method + " not available in VAEModel")
+
+        # Distortion
+        sample_distortion = tf.reduce_mean(tf.square(x_n-self.decoder(apx_post.sample())), axis=-1)
+        distortion = tf.math.log(tf.reduce_mean(sample_distortion))
+
+        # Rate
+        sample_rate = tfp.distributions.kl_divergence(apx_post, prior)
+        rate = tf.math.log(tf.reduce_mean(sample_rate))
+        
+        # SDE Distortion
+        sde_sample_distortion = -tf.reduce_mean(log_prob, axis=-1)
+        sde_distortion = tf.reduce_mean(sde_sample_distortion)
+
+        # Loss
+        loss = distortion + sde_distortion + rate
+
+        # Add loss and metrics
+        self.add_loss(loss)
+        self.add_metric(rate, name="rate", aggregation="mean")
+        self.add_metric(distortion, name="distortion", aggregation="mean")
+        self.add_metric(sde_distortion, name="sde_distortion", aggregation="mean")
+
+        return x_np1
+
+    @staticmethod
+    def define_model(n_input_dimensions, n_latent_dimensions, n_layers, n_dim_per_layer,
+                     diffusivity_type="diagonal", activation="tanh"):
+        encoder = ModelBuilder.define_forward_model(n_input_dimensions,
+                                                    n_latent_dimensions,
+                                                    n_layers,
+                                                    n_dim_per_layer,
+                                                    "encoder",
+                                                    activation=activation)
+        decoder = ModelBuilder.define_gaussian_process(n_latent_dimensions,
+                                                       n_input_dimensions,
+                                                       n_layers,
+                                                       n_dim_per_layer,
+                                                       "decoder",
+                                                       activation=activation,
+                                                       diffusivity_type=diffusivity_type)
+
+        def full_model(x):
+            return decoder(encoder(x))
+
+        return encoder, decoder, full_model
+
