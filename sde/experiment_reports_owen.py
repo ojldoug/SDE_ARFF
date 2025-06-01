@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from tensorflow import keras
 import tensorflow as tf
 import scipy.spatial.distance
@@ -44,15 +45,57 @@ def sample_data(drift_diffusion, step_size, n_pts, n_subsample, rng, ylim, plim=
     return y_np_data, y_np1_data, p_data
 
 
-
-
-
 class PlotResults:
-    def __init__(self, script_dir, filename=None, n_subsample=None):
+    def __init__(self, script_dir, filename=None, n_subsample=1):
         self.script_dir = script_dir
         self.filename = filename
         self.n_subsample = n_subsample
 
+    @staticmethod
+    def integrand(*args):
+        step_size = args[-2]
+        true_diffusion = args[-1]
+        x = np.array(args[:-2])
+        
+        diffusion = true_diffusion(x)
+        diffusion = np.atleast_2d(diffusion)
+    
+        diffusion_matrix = diffusion @ diffusion.T
+        scaled_matrix = step_size * diffusion_matrix
+        det = np.linalg.det(scaled_matrix)
+            
+        return np.log(det)
+    
+    
+    def mean_min_loss(self, true_diffusion, n_pts, validation_split, step_size, ylim, xlim=None, YinX=True, save=False):
+        if xlim is None: 
+            xlim = ylim
+        elif YinX:
+            xlim = np.concatenate([ylim, xlim], axis=0)
+    
+        bounds = [(xlim[i, 0], xlim[i, 1]) for i in range(xlim.shape[0])]
+        integral_result, _ = nquad(PlotResults.integrand, bounds, args=(step_size, true_diffusion))
+    
+        domain_volume = np.prod([xlim[i, 1] - xlim[i, 0] for i in range(xlim.shape[0])])
+        MML = 0.5 * integral_result / domain_volume + 0.5 * ylim.shape[0] * (1 + np.log(2 * np.pi))
+    
+        SD = np.sqrt(0.5 * ylim.shape[0] / (n_pts*(1 - validation_split)))
+        SD_val = np.sqrt(0.5 * ylim.shape[0] / (n_pts*validation_split))
+        
+        print('Theoretical mean min loss:', MML)
+        print('Loss standard deviation:', SD)
+        print('Validation loss standard deviation:', SD_val)
+        if save:
+            output_dir = os.path.join(self.script_dir, 'saved_results/loss_v_time_data')
+            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}_min_loss.txt")
+            with open(output_path, 'w') as file:
+                file.write(f"{MML}\n")
+        
+
+        
+
+
+    
     def plot_results_functions(self, apx_drift_diffusivity, true_drift_diffusivity,
                                x_data,
                                p_data=None,
@@ -136,7 +179,7 @@ class PlotResults:
     
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/trained_v_true_plots')
-            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}")
+            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.png")
             fig.savefig(output_path, dpi=300, bbox_inches='tight')
 
     def plot_parameter_functions(self, apx_drift_diffusivity, true_drift_diffusivity,
@@ -220,7 +263,7 @@ class PlotResults:
         
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/trained_v_true_plots')
-            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}")
+            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.png")
             fig.savefig(output_path, dpi=300, bbox_inches='tight')
 
     @staticmethod
@@ -319,7 +362,7 @@ class PlotResults:
 
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/trajectory_histograms')
-            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}_{name}")
+            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}_{name}.png")
             fig.savefig(output_path, dpi=300, bbox_inches='tight')
             plt.close(fig)
 
@@ -361,13 +404,11 @@ class PlotResults:
         print("Mean Training Time: ", mean_TT, "s")
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/loss_v_time_data')
-            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}")
+            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.txt")
             with open(output_path, 'w') as file:
                 file.write(f"{mean_TT},{mean_VL},{std_TT_above},{std_TT_below},{std_VL_above},{std_VL_below}\n")
 
     def loss_v_time(self, TT, VL, save=False):
-        #TT = np.atleast_2d(TT)
-        #VL = np.atleast_2d(VL)
         N_EPOCHS = TT.shape[1]
         
         # Initialize arrays to store results
@@ -494,39 +535,7 @@ def plot_histogram_ex6(y, times,  max_time):
 
 
 
-def integrand(*args):
-    step_size = args[-2]
-    true_diffusion = args[-1]
-    x = np.array(args[:-2])
-    
-    diffusion = true_diffusion(x)
-    diffusion = np.atleast_2d(diffusion)
 
-    diffusion_matrix = diffusion @ diffusion.T
-    scaled_matrix = step_size * diffusion_matrix
-    det = np.linalg.det(scaled_matrix)
-        
-    return np.log(det)
-
-
-def mean_min_loss(true_diffusion, n_pts, validation_split, step_size, ylim, xlim=None, YinX=True):
-    if xlim is None: 
-        xlim = ylim
-    elif YinX:
-        xlim = np.concatenate([ylim, xlim], axis=0)
-
-    bounds = [(xlim[i, 0], xlim[i, 1]) for i in range(xlim.shape[0])]
-    integral_result, _ = nquad(integrand, bounds, args=(step_size, true_diffusion))
-
-    domain_volume = np.prod([xlim[i, 1] - xlim[i, 0] for i in range(xlim.shape[0])])
-    MML = 0.5 * integral_result / domain_volume + 0.5 * ylim.shape[0] * (1 + np.log(2 * np.pi))
-
-    SD = np.sqrt(0.5 * ylim.shape[0] / (n_pts*(1 - validation_split)))
-    SD_val = np.sqrt(0.5 * ylim.shape[0] / (n_pts*validation_split))
-    
-    print('Theoretical mean min loss:', MML)
-    print('Loss standard deviation:', SD)
-    print('Validation loss standard deviation:', SD_val)
 
 
 

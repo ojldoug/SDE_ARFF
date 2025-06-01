@@ -44,7 +44,7 @@ class SDEARFFTrain:
         self.rng = rng
         self.constant_diff = constant_diff
         self.resampling = resampling
-        self.history = {'loss': None, 'val_loss': None, 'true_val_loss': None, 'training_time': None}
+        self.history = {'loss': None, 'val_loss': None, 'training_time': None}
 
     @staticmethod
     def normalise_z(z):
@@ -224,17 +224,18 @@ class SDEARFFTrain:
 
         return x, iter
     
-    def get_loss(self, y_n, y_np1, x, step_sizes, true_drift=None, true_diffusion=None):
+    def get_loss(self, y_n, y_np1, x, step_sizes, drift=None, diffusion=None):
         
-        if true_drift is None:
+        if drift is None:
             drift_ = SDEARFFTrain.drift(self, x)
             diffusion_ = SDEARFFTrain.diff(self, x)
         else:
-            drift_ = true_drift(x)
-            diffusion_ = true_diffusion(x)
-
+            drift_ = drift(x)
+            diffusion_ = diffusion(x)
+            
         loc = y_n + step_sizes * drift_
         scale = np.sqrt(step_sizes).reshape(-1, 1, 1) * diffusion_
+        
         if self.diff_type == "spd":
             scale = tf.linalg.matmul(scale, tf.linalg.matrix_transpose(scale))
             scale = tf.linalg.cholesky(scale)
@@ -330,7 +331,7 @@ class SDEARFFTrain:
         elif YinX:
             x = np.concatenate((y_n, x), axis=1)
 
-        (y_n, y_np1, x, step_sizes), (y_n_valid, y_np1_valid, x_valid, step_sizes_valid) = SDEARFFTrain.split_data(self, validation_split, y_n, y_np1, x, step_sizes.reshape(-1, 1))
+        (y_n, y_np1, x, step_sizes), (y_n_valid, y_np1_valid, x_valid, step_sizes_valid) = SDEARFFTrain.split_data(self, validation_split, y_n, y_np1, x, step_sizes)
 
         self.x_min = np.min(x, axis=0)
         self.x_max = np.max(x, axis=0)
@@ -376,12 +377,10 @@ class SDEARFFTrain:
         # calculate losses
         self.history['loss'] = SDEARFFTrain.get_loss(self, y_n, y_np1, x, step_sizes)
         self.history['val_loss'] = SDEARFFTrain.get_loss(self, y_n_valid, y_np1_valid, x_valid, step_sizes_valid)
-        self.history['true_val_loss'] = SDEARFFTrain.get_loss(self, y_n_valid, y_np1_valid, x_valid, step_sizes_valid, true_drift=true_drift, true_diffusion=true_diffusion)
         self.history['training_time'] = z_time + diff_vector_time + minima_time_drift + minima_time_diff
 
         print(f"\rObserved loss: {self.history['loss']}")
         print(f"\rObserved validation loss: {self.history['val_loss']}")
-        print(f"\rTrue function validation loss: {self.history['true_val_loss']}")
         print(f"\rTraining time: {self.history['training_time']}")
         return self
         

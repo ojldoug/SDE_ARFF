@@ -10,6 +10,7 @@ import time
 from matplotlib.colors import Normalize
 from multiprocessing import Pool
 from scipy.linalg import sqrtm
+from scipy.integrate import nquad
 from numpy.linalg import cholesky
 
 tfd = tfp.distributions
@@ -26,9 +27,9 @@ class NNHyperparameters:
         self.name = name
 
 
-class SDEARFFTrain:
+class SDEAMTrain:
     def __init__(self, n_dimensions=1, x_min=None, x_max=None, omega_drift=None, amp_drift=None, z_mean=0, z_std=1,
-                 omega_diff=None, amp_diff=None, diff_std=1, diff_type="diagonal", rng=None, constant_diff=False, resampling=True):
+                 omega_diff=None, amp_diff=None, diff_std=1, diff_type="diagonal", constant_diff=False, omega_g=None, amp_g=None, g_mean=0, g_std=1, resampling=True):
         self.d = n_dimensions
         self.tri = n_dimensions * (n_dimensions + 1) // 2
         self.x_min = x_min
@@ -41,10 +42,11 @@ class SDEARFFTrain:
         self.amp_diff = amp_diff
         self.diff_std = diff_std
         self.diff_type = diff_type
-        self.rng = rng
         self.constant_diff = constant_diff
+        self.g_mean = g_mean
+        self.g_std = g_std
         self.resampling = resampling
-        self.history = {'loss': None, 'val_loss': None, 'training_time': None}
+        self.history = {'loss': None, 'val_loss': None, 'true_val_loss': None, 'training_time': None}
 
     @staticmethod
     def normalise_z(z):
@@ -59,12 +61,13 @@ class SDEARFFTrain:
         diff_vectors_norm = diff_vectors / diff_std
         return diff_vectors_norm, diff_std
 
-    def split_data(self, validation_split, *inputs):
+    @staticmethod
+    def split_data(validation_split, *inputs):
         num_samples = inputs[0].shape[0]
         valid_sample_size = int(num_samples * validation_split)
 
         # Generate random indices for the validation set
-        valid_indices = self.rng.choice(num_samples, size=valid_sample_size, replace=False)
+        valid_indices = np.random.choice(num_samples, size=valid_sample_size, replace=False)
 
         # Generate masks to separate training and validation data
         mask = np.ones(num_samples, dtype=bool)
@@ -84,7 +87,7 @@ class SDEARFFTrain:
 
     @staticmethod
     def beta(x, omega, amp):
-        beta_ = np.real(np.matmul(SDEARFFTrain.S(x, omega), amp))
+        beta_ = np.real(np.matmul(SDEAMTrain.S(x, omega), amp))
         return beta_
 
     @staticmethod
@@ -97,7 +100,7 @@ class SDEARFFTrain:
 
     def diff(self, x):
         x_norm = (x-self.x_min)/(self.x_max-self.x_min)
-        diff_vectors = SDEARFFTrain.beta(x_norm, self.omega_diff, self.amp_diff) * self.diff_std
+        diff_vectors = SDEAMTrain.beta(x_norm, self.omega_diff, self.amp_diff) * self.diff_std
         diff_matrix = np.zeros((x.shape[0], self.d, self.d))
         
         if self.diff_type == "diagonal":
@@ -109,23 +112,30 @@ class SDEARFFTrain:
             diff_matrix[:, lower_triangle_indices[1], lower_triangle_indices[0]] = diff_vectors[:, :self.tri]
             if self.diff_type == "triangular":
                 with Pool() as pool:
-                    diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_cholesky, diff_matrix))
+                    diff_matrix = np.array(pool.map(SDEAMTrain.matrix_cholesky, diff_matrix))
             else:
                 with Pool() as pool:
-                    diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_sqrtm, diff_matrix))
+                    diff_matrix = np.array(pool.map(SDEAMTrain.matrix_sqrtm, diff_matrix))
                 
         return diff_matrix
 
     def drift(self, x):
         x_norm = (x-self.x_min)/(self.x_max-self.x_min)
-        drift_ = (SDEARFFTrain.beta(x_norm, self.omega_drift, self.amp_drift) * self.z_std + self.z_mean)
+        drift_ = (SDEAMTrain.beta(x_norm, self.omega_drift, self.amp_drift) * self.z_std + self.z_mean)
         return drift_
 
-    def drift_diffusion(self, x):
-        return SDEARFFTrain.drift(self, x), SDEARFFTrain.diff(self, x)
+    def drift2(self, x):
+        x_norm = (x-self.x_min)/(self.x_max-self.x_min)
+        g_ = SDEAMTrain.beta(x_norm, self.omega_drift2, self.amp_drift2) * self.g_std + self.g_mean
+        diff_ = SDEAMTrain.diff(self, x)
+        drift2_ = np.einsum('ij,ijk->ik', g_, diff_)
+        return drift2_
+    
+    def drift_diffusion(self, x, _):
+        return SDEAMTrain.drift2(self, x), SDEAMTrain.diff(self, x)
 
     def get_diff_vectors(self, y_n, y_np1, x, step_sizes):
-        f = y_np1 - (y_n + step_sizes * SDEARFFTrain.drift(self, x))
+        f = y_np1 - (y_n + step_sizes * SDEAMTrain.drift(self, x))
         if self.diff_type == "diagonal":
             diff_vectors = f ** 2 / step_sizes
         else:
@@ -140,11 +150,11 @@ class SDEARFFTrain:
 
     @staticmethod
     def get_amp(x, y_np1, lambda_reg, omega, K):
-        St = SDEARFFTrain.S(x, omega)
+        St = SDEAMTrain.S(x, omega)
         A = np.matmul(np.transpose(np.conj(St)), St) + x.shape[0] * lambda_reg * np.identity(K)
         b = np.matmul(np.transpose(np.conj(St)), y_np1)
         #amp = LA.solve(A, b)
-        amp, _ = SDEARFFTrain.cgls(A, b, shift=0, tol=1e-10, maxit=1e3)  # iterative solver 
+        amp, _ = SDEAMTrain.cgls(A, b, shift=0, tol=1e-10, maxit=1e3)  # iterative solver 
         return amp
 
     @staticmethod
@@ -224,18 +234,17 @@ class SDEARFFTrain:
 
         return x, iter
     
-    def get_loss(self, y_n, y_np1, x, step_sizes, drift=None, diffusion=None):
+    def get_loss(self, y_n, y_np1, x, step_sizes, true_drift=None, true_diffusion=None):
         
-        if drift is None:
-            drift_ = SDEARFFTrain.drift(self, x)
-            diffusion_ = SDEARFFTrain.diff(self, x)
+        if true_drift is None:
+            drift_ = SDEAMTrain.drift(self, x)
+            diffusion_ = SDEAMTrain.diff(self, x)
         else:
-            drift_ = drift(x)
-            diffusion_ = diffusion(x)
-            
+            drift_ = true_drift(x)
+            diffusion_ = true_diffusion(x)
+
         loc = y_n + step_sizes * drift_
         scale = np.sqrt(step_sizes).reshape(-1, 1, 1) * diffusion_
-        
         if self.diff_type == "spd":
             scale = tf.linalg.matmul(scale, tf.linalg.matrix_transpose(scale))
             scale = tf.linalg.cholesky(scale)
@@ -263,14 +272,14 @@ class SDEARFFTrain:
         loss = distortion
         return loss
 
-    def ARFF_train(self, param, x, y_norm, validation_split):
+    def am_train(self, param, x, y_norm, validation_split):
         start_time = time.time()
         x_norm = (x-self.x_min)/(self.x_max-self.x_min)
-        (x_norm, y_norm), (x_norm_valid, y_norm_valid) = SDEARFFTrain.split_data(self, validation_split, x_norm, y_norm)
+        (x_norm, y_norm), (x_norm_valid, y_norm_valid) = SDEAMTrain.split_data(validation_split, x_norm, y_norm)
 
         K = param.K
         omega = np.zeros((x.shape[1], K))
-        amp = SDEARFFTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega, K)
+        amp = SDEAMTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega, K)
 
         ve = np.zeros(param.M_max)
         ve_min = float('inf')
@@ -284,21 +293,21 @@ class SDEARFFTrain:
             # resampling
             if self.resampling:
                 amp_pmf = np.linalg.norm(amp, axis=1) / np.sum(np.linalg.norm(amp, axis=1))
-                omega = omega[:, self.rng.choice(K, K, p=amp_pmf)]
+                omega = omega[:, np.random.choice(K, K, p=amp_pmf)]
                 
             # adaptive metropolis
-            omega_prime = omega + param.delta * self.rng.normal(0, 1, size=(x.shape[1], K))
-            amp_prime = SDEARFFTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega_prime, K)
+            omega_prime = omega + param.delta * np.random.normal(0, 1, size=(x.shape[1], K))
+            amp_prime = SDEAMTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega_prime, K)
             for k in range(0, K - 1):
                 D = (np.linalg.norm(amp_prime[k, :]) / np.linalg.norm(amp[k, :])) ** param.gamma
-                if D >= self.rng.random():
+                if D >= np.random.random():
                     amp[k, :] = amp_prime[k, :]
                     omega[:, k] = omega_prime[:, k]        
 
-            amp = SDEARFFTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega, K)
+            amp = SDEAMTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega, K)
 
             # calculate validation loss
-            ve[i] = np.mean(np.abs(SDEARFFTrain.beta(x_norm_valid, omega, amp) - y_norm_valid) ** 2)
+            ve[i] = np.mean(np.abs(SDEAMTrain.beta(x_norm_valid, omega, amp) - y_norm_valid) ** 2)
 
             # break loop when validation loss stagnates
             if i < moving_avg_len:
@@ -325,13 +334,13 @@ class SDEARFFTrain:
 
         return ve[:i], moving_avg[:i], end_time-start_time
 
-    def train_model(self, drift_param, diff_param, true_drift, true_diffusion, y_n, y_np1, x=None, step_sizes=None, validation_split=0.1, ARFF_validation_split=0.1, YinX=True, plot=False):
+    def train_model(self, drift_param, diff_param, drift2_param, true_drift, true_diffusion, y_n, y_np1, x=None, step_sizes=None, validation_split=0.1, AM_validation_split=0.1, XinY=True, plot=False):
         if x is None:
             x = y_n
-        elif YinX:
+        elif XinY:
             x = np.concatenate((y_n, x), axis=1)
 
-        (y_n, y_np1, x, step_sizes), (y_n_valid, y_np1_valid, x_valid, step_sizes_valid) = SDEARFFTrain.split_data(self, validation_split, y_n, y_np1, x, step_sizes)
+        (y_n, y_np1, x, step_sizes), (y_n_valid, y_np1_valid, x_valid, step_sizes_valid) = SDEAMTrain.split_data(validation_split, y_n, y_np1, x, step_sizes.reshape(-1, 1))
 
         self.x_min = np.min(x, axis=0)
         self.x_max = np.max(x, axis=0)
@@ -339,48 +348,71 @@ class SDEARFFTrain:
         # calculate z
         z_start = time.time()
         z = (y_np1 - y_n)/step_sizes
-        z_norm, self.z_mean, self.z_std = SDEARFFTrain.normalise_z(z)
+        z_norm, self.z_mean, self.z_std = SDEAMTrain.normalise_z(z)
         z_time = time.time() - z_start
 
         # train for z using ARFF
-        ve_drift, moving_avg_drift, minima_time_drift = SDEARFFTrain.ARFF_train(self, drift_param, x, z_norm, ARFF_validation_split)
+        ve_drift, moving_avg_drift, minima_time_drift = SDEAMTrain.am_train(self, drift_param, x, z_norm, AM_validation_split)
 
         if plot:
             if x.shape[1] == 1:
-                SDEARFFTrain.plot_1D(self, true_drift, x, z_norm, drift_param.name)
+                SDEAMTrain.plot_1D(self, true_drift, x, z_norm, drift_param.name)
             elif x.shape[1] == 2:
-                SDEARFFTrain.plot_2D(self, true_drift, x, z_norm, drift_param.name)
-            SDEARFFTrain.plot_loss(ve_drift, moving_avg_drift)
+                SDEAMTrain.plot_2D(self, true_drift, x, z_norm, drift_param.name)
+            SDEAMTrain.plot_loss(ve_drift, moving_avg_drift)
 
         # calculate point-wise diffusion
         diff_vector_start = time.time()
-        diff_vectors = SDEARFFTrain.get_diff_vectors(self, y_n, y_np1, x, step_sizes)
-        diff_vectors_norm, self.diff_std = SDEARFFTrain.normalise_diff_vectors(diff_vectors)
+        diff_vectors = SDEAMTrain.get_diff_vectors(self, y_n, y_np1, x, step_sizes)
+        diff_vectors_norm, self.diff_std = SDEAMTrain.normalise_diff_vectors(diff_vectors)
         diff_vector_time = time.time() - diff_vector_start
 
         # train for global diffusion using ARFF
         if not self.constant_diff:
-            ve_diff, moving_avg_diff, minima_time_diff = SDEARFFTrain.ARFF_train(self, diff_param, x, diff_vectors_norm, ARFF_validation_split)
+            ve_diff, moving_avg_diff, minima_time_diff = SDEAMTrain.am_train(self, diff_param, x, diff_vectors_norm, AM_validation_split)
             if plot:
                 if x.shape[1] == 1:
-                    SDEARFFTrain.plot_1D(self, true_diffusion, x, diff_vectors_norm, diff_param.name)
+                    SDEAMTrain.plot_1D(self, true_diffusion, x, diff_vectors_norm, diff_param.name)
                 elif x.shape[1] == 2:
-                    SDEARFFTrain.plot_2D(self, true_diffusion, x, diff_vectors_norm, diff_param.name)
-                SDEARFFTrain.plot_loss(ve_diff, moving_avg_diff)
+                    SDEAMTrain.plot_2D(self, true_diffusion, x, diff_vectors_norm, diff_param.name)
+                SDEAMTrain.plot_loss(ve_diff, moving_avg_diff)
         else:
             self.omega_diff = np.zeros((x.shape[1], diff_param.K))
             self.amp_diff = np.ones((diff_param.K, self.tri))/diff_param.K
             minima_time_diff = 0
             if plot:
-                print('Trained Diffusion =', SDEARFFTrain.diff(self, x[0, :].reshape(1, -1)))
+                print('Trained Diffusion =', SDEAMTrain.diff(self, x[0, :].reshape(1, -1)))
 
+        # calculate g
+        g_start = time.time()
+        diff_inv = np.linalg.inv(SDEAMTrain.diff(self, x))
+        #diff_inv = np.linalg.inv(true_diffusion(x))
+        g = np.einsum('ij,ijk->ik', (y_np1 - y_n), diff_inv) / step_sizes
+        print(np.mean((y_np1 - y_n) / step_sizes))
+        print(np.mean(true_drift(x)))
+        print('g', np.mean(g))
+        g_norm, self.g_mean, self.g_std = SDEAMTrain.normalise_z(g)
+        g_time = time.time() - g_start
+
+        # train for z using ARFF
+        ve_drift2, moving_avg_drift2, minima_time_drift2 = SDEAMTrain.am_train(self, drift2_param, x, g_norm, AM_validation_split)
+        
+        if plot:
+            if x.shape[1] == 1:
+                SDEAMTrain.plot_1D(self, true_drift, x, g_norm, drift2_param.name)
+            elif x.shape[1] == 2:
+                SDEAMTrain.plot_2D(self, true_drift, x, g_norm, drift2_param.name)
+            SDEAMTrain.plot_loss(ve_drift2, moving_avg_drift2)
+        
         # calculate losses
-        self.history['loss'] = SDEARFFTrain.get_loss(self, y_n, y_np1, x, step_sizes)
-        self.history['val_loss'] = SDEARFFTrain.get_loss(self, y_n_valid, y_np1_valid, x_valid, step_sizes_valid)
+        self.history['loss'] = SDEAMTrain.get_loss(self, y_n, y_np1, x, step_sizes)
+        self.history['val_loss'] = SDEAMTrain.get_loss(self, y_n_valid, y_np1_valid, x_valid, step_sizes_valid)
+        self.history['true_val_loss'] = SDEAMTrain.get_loss(self, y_n_valid, y_np1_valid, x_valid, step_sizes_valid, true_drift=true_drift, true_diffusion=true_diffusion)
         self.history['training_time'] = z_time + diff_vector_time + minima_time_drift + minima_time_diff
 
         print(f"\rObserved loss: {self.history['loss']}")
         print(f"\rObserved validation loss: {self.history['val_loss']}")
+        print(f"\rTrue function validation loss: {self.history['true_val_loss']}")
         print(f"\rTraining time: {self.history['training_time']}")
         return self
         
@@ -400,14 +432,14 @@ class SDEARFFTrain:
         # plot intermediate function
         omega = getattr(self, f"omega_{name}")
         amp = getattr(self, f"amp_{name}")
-        ax[1].plot(x_grid_norm, SDEARFFTrain.beta(x_grid_norm, omega, amp))
+        ax[1].plot(x_grid_norm, SDEAMTrain.beta(x_grid_norm, omega, amp))
 
         # plot trained drift/diffusion
-        func = getattr(SDEARFFTrain, name)
-        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)), label="Trained")
+        func = getattr(SDEAMTrain, name)
+        ax[2].plot(x_grid, func(self, x_grid).reshape((x_div, 1)))
 
         # plot actual drift/diffusion
-        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)), label="True")
+        ax[2].plot(x_grid, true_func(x_grid).reshape((x_div, 1)))
 
         # set labels
         ax[0].set_ylabel(r'$f(x_0)$', fontsize=12)
@@ -415,12 +447,6 @@ class SDEARFFTrain:
         ax[0].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[1].set_xlabel(r'$\bar{x}_0$', fontsize=12)
         ax[2].set_xlabel(r'$x_0$', fontsize=12)
-
-        ax[0].set_title('Training Data', fontsize=12)
-        ax[1].set_title('Intermediate', fontsize=12)
-        ax[2].set_title('Trained and True', fontsize=12)
-
-        ax[2].legend()
 
         plt.show()
 
@@ -439,9 +465,9 @@ class SDEARFFTrain:
         # get true and trained grid results
         omega = getattr(self, f"omega_{name}")
         amp = getattr(self, f"amp_{name}")
-        func = getattr(SDEARFFTrain, name)
+        func = getattr(SDEAMTrain, name)
 
-        intermediate = SDEARFFTrain.beta(x_norm_grid, omega, amp)
+        intermediate = SDEAMTrain.beta(x_norm_grid, omega, amp)
         trained = func(self, x_grid)
         true_ = true_func(x_grid)
 
@@ -516,6 +542,34 @@ class SDEARFFTrain:
         plt.show()
 
 
-    
+class MeanMinLoss:
+    @staticmethod
+    def integrand(*args):
+        step_size = args[-2]
+        true_diffusion = args[-1]
+        x = np.array(args[:-2])
+        diffusion = true_diffusion(x)
+        if diffusion.ndim == 1:
+            diffusion = diffusion[:, np.newaxis, np.newaxis]
+
+        diffusion_squared = np.dot(diffusion, diffusion.T)
+        scaled_matrix = step_size * diffusion_squared
+        determinant = np.linalg.det(scaled_matrix)
+        return np.log(np.abs(determinant))
+
+    @staticmethod
+    def get_MML(true_diffusion, n_dimensions, n_pts, validation_split, xlim, step_size, input_dimensions=None):
+        if input_dimensions == None:
+            input_dimensions = n_dimensions
+            
+        bounds = [(xlim[i, 0], xlim[i, 1]) for i in range(input_dimensions)]
+        integral_result, _ = nquad(MeanMinLoss.integrand, bounds, args=(step_size, true_diffusion))
+
+        domain_volume = np.prod([xlim[i, 1] - xlim[i, 0] for i in range(input_dimensions)])
+        MML = 0.5 * integral_result / domain_volume + 0.5 * n_dimensions * (1 + np.log(2 * np.pi))
+
+        SD = np.sqrt(0.5 * n_dimensions / (n_pts*(1 - validation_split)))
+        SD_val = np.sqrt(0.5 * n_dimensions / (n_pts*validation_split))
+        return MML, SD, SD_val
 
 

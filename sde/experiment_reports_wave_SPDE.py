@@ -9,6 +9,9 @@ import tensorflow_probability as tfp
 import numpy as np
 
 
+
+
+
 class SPDEUtils:
     """
     Provides several utility methods for learning SPDEs.
@@ -127,22 +130,3 @@ class SPDEUtils:
         #u_np1 = (u_np1 + u_jm1 - u_j) / step_size # + u_j
         u_np1 = 0.5 * (u_np1 + u_jm1)
         return 0.5 * u_j.reshape(-1, 1), p_n, u_np1.reshape(-1, 1)
-
-    def plot_example(ut):
-        fig, ax = plt.subplots(1, 1, figsize=(5, 3))
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes('right', size='5%', pad=0.05)
-    
-        im1 = ax.imshow(ut, extent=[np.min(space), np.max(space), np.min(time), np.max(time)], origin='lower')#, vmin=-1, vmax=1)
-        ax.set_xlabel('Space')
-        ax.set_ylabel('Time')
-        fig.colorbar(im1, cax=cax, orientation='vertical')
-        fig.tight_layout()
-    
-        #fig.savefig('figures/example7_data.pdf')
-        #fig.savefig('figures/example7_data.png')
-    
-        fig, ax = plt.subplots(1, 1, figsize=(5, 3))
-        ax.plot(ut[0:(len(time)//5):(len(time)//5//5), :].T)
-        #ax[1].set_xlim([0, 500])
-        fig.tight_layout()
