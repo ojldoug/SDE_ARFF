@@ -1,5 +1,7 @@
 import tensorflow as tf
+import matplotlib.pyplot as plt
 from tensorflow.keras import layers
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import keras
 import keras.backend as K
@@ -87,7 +89,7 @@ class SPDEUtils:
         return u
 
     @staticmethod
-    def split_forced_wave_spde_data(ut, space, time, step_size):
+    def split_forced_wave_spde_data(ut, space, time):
         """
         Split the given solution data u(t) into the form required by the SODE learning framework.
         The split is based on the numerical integration scheme from "integrate_stochastic_wave".
@@ -124,11 +126,10 @@ class SPDEUtils:
         p_n = np.row_stack(p_n)
 
         # reformulate using the numerical scheme, so that the SDE learning framework can be applied
-        #u_np1 = (u_np1 + u_jm1 - u_j) / step_size # + u_j
         u_np1 = 0.5 * (u_np1 + u_jm1)
         return 0.5 * u_j.reshape(-1, 1), p_n, u_np1.reshape(-1, 1)
 
-    def plot_example(ut):
+    def plot_data(ut, space, time):
         fig, ax = plt.subplots(1, 1, figsize=(5, 3))
         divider = make_axes_locatable(ax)
         cax = divider.append_axes('right', size='5%', pad=0.05)
@@ -138,11 +139,6 @@ class SPDEUtils:
         ax.set_ylabel('Time')
         fig.colorbar(im1, cax=cax, orientation='vertical')
         fig.tight_layout()
-    
-        #fig.savefig('figures/example7_data.pdf')
-        #fig.savefig('figures/example7_data.png')
-    
-        fig, ax = plt.subplots(1, 1, figsize=(5, 3))
-        ax.plot(ut[0:(len(time)//5):(len(time)//5//5), :].T)
-        #ax[1].set_xlim([0, 500])
-        fig.tight_layout()
+
+        plt.show()
+

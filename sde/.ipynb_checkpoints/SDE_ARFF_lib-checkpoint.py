@@ -44,7 +44,7 @@ class SDEARFFTrain:
         self.rng = rng
         self.constant_diff = constant_diff
         self.resampling = resampling
-        self.history = {'loss': None, 'val_loss': None, 'training_time': None}
+        self.history = {'loss': None, 'val_loss': None, 'true_loss': None, 'training_time': None, 'drift_error': None, 'diffusion_error': None}
 
     @staticmethod
     def normalise_z(z):
@@ -95,24 +95,56 @@ class SDEARFFTrain:
     def matrix_cholesky(matrix):
         return cholesky(matrix)
 
-    def diff(self, x):
+    def covariance(self, x):
         x_norm = (x-self.x_min)/(self.x_max-self.x_min)
-        diff_vectors = SDEARFFTrain.beta(x_norm, self.omega_diff, self.amp_diff) * self.diff_std
-        diff_matrix = np.zeros((x.shape[0], self.d, self.d))
+        covariance_vectors = SDEARFFTrain.beta(x_norm, self.omega_diff, self.amp_diff) * self.diff_std
+        covariance_matrix = np.zeros((x.shape[0], self.d, self.d))
+
+        epsilon = 10e-8
         
         if self.diff_type == "diagonal":
             idx = np.arange(self.d)
-            diff_matrix[:, idx, idx] = np.sqrt(np.maximum(diff_vectors, 0.000001))
+            covariance_matrix[:, idx, idx] = np.maximum(covariance_vectors, epsilon)
         else:
-            lower_triangle_indices = np.tril_indices(self.d)
-            diff_matrix[:, lower_triangle_indices[0], lower_triangle_indices[1]] = diff_vectors[:, :self.tri]
-            diff_matrix[:, lower_triangle_indices[1], lower_triangle_indices[0]] = diff_vectors[:, :self.tri]
-            if self.diff_type == "triangular":
-                with Pool() as pool:
-                    diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_cholesky, diff_matrix))
-            else:
-                with Pool() as pool:
-                    diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_sqrtm, diff_matrix))
+            LT_idx = np.tril_indices(self.d)
+            covariance_matrix[:, LT_idx[0], LT_idx[1]] = covariance_vectors[:, :self.tri]
+            covariance_matrix[:, LT_idx[1], LT_idx[0]] = covariance_vectors[:, :self.tri]
+
+            # make diagonals positive
+            diag_idx = np.arange(self.d)
+            covariance_matrix[:, diag_idx, diag_idx] = np.maximum(covariance_matrix[:, diag_idx, diag_idx], epsilon)
+
+        return covariance_matrix
+
+    def diff(self, x):
+        x_norm = (x-self.x_min)/(self.x_max-self.x_min)
+
+        covariance = SDEARFFTrain.covariance(self, x)
+        if self.diff_type == "diagonal":
+            diff_matrix = np.sqrt(covariance)
+        elif self.diff_type == "triangular":
+            with Pool() as pool:
+                diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_cholesky, covariance))
+        else:
+            with Pool() as pool:
+                diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_sqrtm, covariance))
+            
+        # diff_vectors = SDEARFFTrain.beta(x_norm, self.omega_diff, self.amp_diff) * self.diff_std
+        # diff_matrix = np.zeros((x.shape[0], self.d, self.d))
+        
+        # if self.diff_type == "diagonal":
+        #     idx = np.arange(self.d)
+        #     diff_matrix[:, idx, idx] = np.sqrt(np.maximum(diff_vectors, 0.000001))
+        # else:
+        #     lower_triangle_indices = np.tril_indices(self.d)
+        #     diff_matrix[:, lower_triangle_indices[0], lower_triangle_indices[1]] = diff_vectors[:, :self.tri]
+        #     diff_matrix[:, lower_triangle_indices[1], lower_triangle_indices[0]] = diff_vectors[:, :self.tri]
+        #     if self.diff_type == "triangular":
+        #         with Pool() as pool:
+        #             diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_cholesky, diff_matrix))
+        #     else:
+        #         with Pool() as pool:
+        #             diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_sqrtm, diff_matrix))
                 
         return diff_matrix
 
@@ -223,27 +255,22 @@ class SDEARFFTrain:
             flag = 4  # Instability detected
 
         return x, iter
-    
-    def get_loss(self, y_n, y_np1, x, step_sizes, drift=None, diffusion=None):
+
+    @staticmethod
+    def get_loss(y_n, y_np1, x_n, step_sizes, drift, diffusion, diff_type="symmetric"):
+ 
+        loc = y_n + step_sizes * drift(x_n)
+        scale = np.sqrt(step_sizes).reshape(-1, 1, 1) * diffusion(x_n)
         
-        if drift is None:
-            drift_ = SDEARFFTrain.drift(self, x)
-            diffusion_ = SDEARFFTrain.diff(self, x)
-        else:
-            drift_ = drift(x)
-            diffusion_ = diffusion(x)
-            
-        loc = y_n + step_sizes * drift_
-        scale = np.sqrt(step_sizes).reshape(-1, 1, 1) * diffusion_
-        
-        if self.diff_type == "spd":
+        if diff_type == "symmetric":
             scale = tf.linalg.matmul(scale, tf.linalg.matrix_transpose(scale))
             scale = tf.linalg.cholesky(scale)
         
         loc = tf.convert_to_tensor(loc, dtype=tf.float64)
         scale = tf.convert_to_tensor(scale, dtype=tf.float64)
         
-        if self.diff_type == "diagonal":
+        if diff_type == "diagonal":
+            scale_diag = np.diagonal(scale, axis1=1, axis2=2)
             approx_normal = tfd.MultivariateNormalDiag(
                 loc=loc,
                 scale_diag=np.diagonal(scale, axis1=1, axis2=2),
@@ -263,6 +290,11 @@ class SDEARFFTrain:
         loss = distortion
         return loss
 
+    @staticmethod
+    def RMSE(trained_func, true_func, x):
+        rmse = np.sqrt(np.mean((trained_func(x).reshape(-1, 1, 1) - true_func(x).reshape(-1, 1, 1)) ** 2))
+        return rmse
+    
     def ARFF_train(self, param, x, y_norm, validation_split):
         start_time = time.time()
         x_norm = (x-self.x_min)/(self.x_max-self.x_min)
@@ -375,12 +407,18 @@ class SDEARFFTrain:
                 print('Trained Diffusion =', SDEARFFTrain.diff(self, x[0, :].reshape(1, -1)))
 
         # calculate losses
-        self.history['loss'] = SDEARFFTrain.get_loss(self, y_n, y_np1, x, step_sizes)
-        self.history['val_loss'] = SDEARFFTrain.get_loss(self, y_n_valid, y_np1_valid, x_valid, step_sizes_valid)
+        self.history['drift_RMSE'] = SDEARFFTrain.RMSE(self.drift, true_drift, x)
+        self.history['diffusion_RMSE'] = SDEARFFTrain.RMSE(self.diff, true_diffusion, x)
+        self.history['loss'] = SDEARFFTrain.get_loss(y_n, y_np1, x, step_sizes, drift=self.drift, diffusion=self.diff, diff_type=self.diff_type)
+        self.history['val_loss'] = SDEARFFTrain.get_loss(y_n_valid, y_np1_valid, x_valid, step_sizes_valid, drift=self.drift, diffusion=self.diff, diff_type=self.diff_type)
+        self.history['true_loss'] = SDEARFFTrain.get_loss(y_n_valid, y_np1_valid, x_valid, step_sizes_valid, drift=true_drift, diffusion=true_diffusion, diff_type=self.diff_type)
         self.history['training_time'] = z_time + diff_vector_time + minima_time_drift + minima_time_diff
 
+        print(f"\rDrift RMSE: {self.history['drift_RMSE']}")
+        print(f"\rDiffusion RMSE: {self.history['diffusion_RMSE']}")
         print(f"\rObserved loss: {self.history['loss']}")
         print(f"\rObserved validation loss: {self.history['val_loss']}")
+        print(f"\rTrue loss: {self.history['true_loss']}")
         print(f"\rTraining time: {self.history['training_time']}")
         return self
         

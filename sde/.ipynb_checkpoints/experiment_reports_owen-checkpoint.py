@@ -12,7 +12,6 @@ from sde.sde_learning_network import \
     SDEIntegrators
 )
 
-
 def euler_maruyama_batch(drift_diffusion, step_size, rng, yk, pk=None):
     if pk is not None:
         xk = np.concatenate([yk, pk], axis=1)
@@ -92,10 +91,6 @@ class PlotResults:
                 file.write(f"{MML}\n")
         
 
-        
-
-
-    
     def plot_results_functions(self, apx_drift_diffusivity, true_drift_diffusivity,
                                x_data,
                                p_data=None,
@@ -489,49 +484,50 @@ class PlotResults:
 
 
 
-def histogram_data_ex6(drift_diffusivity, true_paths, step_sizes_layered, n_dimensions, rng, ARFF):
-    X = [0] * (len(step_sizes_layered) + 1)
-    X[0] = np.array([path[0] for path in true_paths])
-    
-    for l in range(len(step_sizes_layered)):
-        dW = step_sizes_layered[l].reshape(-1,1) * rng.normal(loc=0, scale=1, size=(len(step_sizes_layered[l]), n_dimensions))
-        drift_, diff_ = drift_diffusivity(X[l][:len(step_sizes_layered[l])], None)
+# def histogram_data_ex6(drift_diffusivity, y, time_g, n_dimensions, rng, ARFF):
+#     y_ = y.copy()
 
-        if not ARFF:
-            diff_new = np.zeros((len(step_sizes_layered[l]), n_dimensions, n_dimensions))
-            indices = np.arange(n_dimensions)
-            diff_new[:, indices, indices] = diff_
-            diff_ = diff_new
+#     p = 0
+#     for l in range(len(y_)):
+#         if y_[l].shape[0] < 2:
+#             y.pop(l-p)
+#             time_g.pop(l-p)
+#             p += 1
+    
+#     step_sizes = [0] * len(time_g)
+#     step_sizes_len = [0] * len(time_g)
+#     for k in range(len(time_g)):
+#         step_sizes[k] = np.gradient(time_g[k])[:-1]
+#         step_sizes_len[k] = len(step_sizes[k]) 
+    
+#     sorted_indices = np.argsort(step_sizes_len)[::-1]
+#     time_g_sorted = [time_g[i] for i in sorted_indices]
+#     step_sizes_sorted = [step_sizes[i] for i in sorted_indices]
+#     y_sorted = [y[i] for i in sorted_indices]
+    
+#     step_sizes_layered = [np.array([x for x in group if x is not None]) for group in zip_longest(*step_sizes_sorted, fillvalue=None)]
+#     time_g_layered = [np.array([x for x in group if x is not None]) for group in zip_longest(*time_g_sorted, fillvalue=None)]
+#     y_layered = [np.array([x for x in group if x is not None]) for group in zip_longest(*y_sorted, fillvalue=None)]
+    
+#     X = [0] * (len(step_sizes_layered) + 1)
+#     X[0] = np.array([path[0] for path in y])
+    
+#     for l in range(len(step_sizes_layered)):
+#         dW = step_sizes_layered[l].reshape(-1,1) * rng.normal(loc=0, scale=1, size=(len(step_sizes_layered[l]), n_dimensions))
+#         drift_, diff_ = drift_diffusivity(X[l][:len(step_sizes_layered[l])])
+
+#         if not ARFF:
+#             diff_new = np.zeros((len(step_sizes_layered[l]), n_dimensions, n_dimensions))
+#             indices = np.arange(n_dimensions)
+#             diff_new[:, indices, indices] = diff_
+#             diff_ = diff_new
         
-        X[l+1] = X[l][:len(step_sizes_layered[l])] + step_sizes_layered[l].reshape(-1,1) * drift_ + np.einsum('ijk,ik->ij', diff_, dW)
+#         X[l+1] = X[l][:len(step_sizes_layered[l])] + step_sizes_layered[l].reshape(-1,1) * drift_ + np.einsum('ijk,ik->ij', diff_, dW)
 
-    return X
-    
+#     return X, time_g_layered
 
-def plot_histogram_ex6(y, times,  max_time):
 
-    times_all = np.concatenate(times)  
-    y_all = np.concatenate(y, axis=0)  
 
-    bins_0 = np.linspace(times_all.min() + 0.01, max_time, 100)
-    bins_1 = np.linspace(0, 1, 100)
-    
-    fig, axes = plt.subplots(2, 1, figsize=(5, 8), gridspec_kw={'hspace': 0.12})
-    
-    for d in range(2):
-        hist, x_edges, y_edges = np.histogram2d(times_all, y_all[:, d], bins=[bins_0, bins_1])
-        
-        axes[d].imshow(
-            hist.T,
-            origin='lower',
-            cmap='inferno',
-            aspect='auto',
-            extent=[times_all.min(), max_time, 0, 1]
-        )
-        axes[d].set_ylabel(f"$y_{d}$")
-    
-    fig.supxlabel("Time (s)")
-    plt.show()
 
 
 
