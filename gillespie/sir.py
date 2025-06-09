@@ -4,6 +4,7 @@ import scipy
 import matplotlib.pyplot as plt
 import pickle
 from itertools import zip_longest
+import os
 
 import gillespie.gillespie_c as gsc
 
@@ -341,7 +342,7 @@ def histogram_data_SIRG(drift_diffusion, y, time_g, n_dimensions, rng, ARFF):
             diffusion_new = np.zeros((len(step_sizes_layered[l]), n_dimensions, n_dimensions))
             idx = np.arange(n_dimensions)
             diffusion_new[:, idx, idx] = diffusion
-            diffusion = diff_new
+            diffusion = diffusion_new
         
         X[l+1] = X[l][:N] + steps.reshape(-1,1) * drift + np.einsum('ijk,ik->ij', diffusion, dW)
 
@@ -383,7 +384,7 @@ def plot_histogram_SIRG(y, times,  max_time, title, script_dir, filename, n_skip
 
     if save:
         output_dir = os.path.join(script_dir, 'saved_results/trajectory_histograms')
-        output_path = os.path.join(output_dir, f"{filename}_SS{self.n_subsample}_{name}.png")
+        output_path = os.path.join(output_dir, f"{filename}_SS10_{title}.png")
         fig.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
 

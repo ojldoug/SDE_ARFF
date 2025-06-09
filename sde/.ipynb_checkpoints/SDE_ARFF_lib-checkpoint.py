@@ -128,24 +128,7 @@ class SDEARFFTrain:
         else:
             with Pool() as pool:
                 diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_sqrtm, covariance))
-            
-        # diff_vectors = SDEARFFTrain.beta(x_norm, self.omega_diff, self.amp_diff) * self.diff_std
-        # diff_matrix = np.zeros((x.shape[0], self.d, self.d))
-        
-        # if self.diff_type == "diagonal":
-        #     idx = np.arange(self.d)
-        #     diff_matrix[:, idx, idx] = np.sqrt(np.maximum(diff_vectors, 0.000001))
-        # else:
-        #     lower_triangle_indices = np.tril_indices(self.d)
-        #     diff_matrix[:, lower_triangle_indices[0], lower_triangle_indices[1]] = diff_vectors[:, :self.tri]
-        #     diff_matrix[:, lower_triangle_indices[1], lower_triangle_indices[0]] = diff_vectors[:, :self.tri]
-        #     if self.diff_type == "triangular":
-        #         with Pool() as pool:
-        #             diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_cholesky, diff_matrix))
-        #     else:
-        #         with Pool() as pool:
-        #             diff_matrix = np.array(pool.map(SDEARFFTrain.matrix_sqrtm, diff_matrix))
-                
+                  
         return diff_matrix
 
     def drift(self, x):

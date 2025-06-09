@@ -171,7 +171,8 @@ class PlotResults:
                 ax[rows_per_function + k_row, k % figures_per_row].set_ylabel(r"true diffusion $\sigma_{" + str(k + 1) + "}$")
                 ax[rows_per_function + k_row, k % figures_per_row].legend()
         fig.tight_layout()
-    
+
+        plt.show()
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/trained_v_true_plots')
             output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.png")
@@ -190,8 +191,9 @@ class PlotResults:
             def data_transform_true(x):
                 return x
     
-        #mean_network, std_network = apx_drift_diffusivity(data_transform_network(x_data).astype(np.float32), p_data)
-        mean_network, std_network = apx_drift_diffusivity(np.concatenate((x_data, p_data), axis=1))
+        mean_network, std_network = apx_drift_diffusivity(data_transform_network(x_data).astype(np.float32), p_data)
+        #mean_network, std_network = apx_drift_diffusivity(np.zeros((x_data.shape)), p_data)
+        #mean_network, std_network = apx_drift_diffusivity(np.concatenate((x_data, p_data), axis=1))
     
         mean_network = keras.backend.eval(mean_network)
         std_network = keras.backend.eval(std_network)
@@ -204,6 +206,7 @@ class PlotResults:
         ms = 0.25  # marker size
     
         x_data_transformed = data_transform_true(x_data)
+        #true_drift_evaluated, true_std_evaluated = true_drift_diffusivity(np.concatenate((x_data_transformed, p_data), axis=1))
         true_drift_evaluated, true_std_evaluated = true_drift_diffusivity(np.concatenate((x_data_transformed, p_data), axis=1))
     
         if true_std_evaluated.shape != true_drift_evaluated.shape:
@@ -255,14 +258,15 @@ class PlotResults:
                 ax[1, k].set_ylabel(r"true diffusivity $\sigma_" + str(k + 1) + "$")
                 ax[1, k].legend()
         fig.tight_layout()
-        
+
+        plt.show()
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/trained_v_true_plots')
             output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.png")
             fig.savefig(output_path, dpi=300, bbox_inches='tight')
 
     @staticmethod
-    def histogram_data(drift_diffusion, step_size, time, rng, ylim, plim, coupled_func, sim_No):
+    def histogram_data(drift_diffusion, step_size, time, rng, ylim, plim, coupled_func, sim_No, matrix_diff):
         
         # Parameters
         active_indices = np.arange(sim_No)
@@ -293,8 +297,12 @@ class PlotResults:
             # get euler-maruyama components
             dW = rng.normal(loc=0, scale=np.sqrt(step_size), size=(len(active_indices), ylim.shape[0]))
             drift_, diff_ = drift_diffusion(X_active)
-            drift_ = drift_.reshape(-1, ylim.shape[0])          
+            drift_ = drift_.reshape(-1, ylim.shape[0])
             diff_ = diff_.reshape(-1, ylim.shape[0], ylim.shape[0])
+            if not matrix_diff:
+                diff_temp = np.zeros((drift_.shape[0], ylim.shape[0], ylim.shape[0]))
+                diff_temp[:, np.arange(2), np.arange(2)] = diff_
+                diff_ = diff_temp
             
             if plim is None:
                 X[active_indices, :, i + 1] = X_active + step_size * drift_ + np.einsum('ijk,ik->ij', diff_, dW)
@@ -313,8 +321,8 @@ class PlotResults:
     
         return X
     
-    def plot_histogram(self, drift_diffusion, step_size, time, rng, ylim, plim=None, coupled_func=None, sim_No=10000, name=None, save=False):
-        X = PlotResults.histogram_data(drift_diffusion, step_size, time, rng, ylim, plim, coupled_func, sim_No)
+    def plot_histogram(self, drift_diffusion, step_size, time, rng, ylim, plim=None, coupled_func=None, sim_No=10000, matrix_diff=True, name=None, save=False):
+        X = PlotResults.histogram_data(drift_diffusion, step_size, time, rng, ylim, plim, coupled_func, sim_No, matrix_diff)
         
         if plim is None: 
             xlim = ylim
@@ -396,7 +404,7 @@ class PlotResults:
         plt.show()
 
         print("Mean Min Loss: ", mean_VL)
-        print("Mean Training Time: ", mean_TT, "s")
+        print("Mean Training Time: ", mean_TT)
         if save:
             output_dir = os.path.join(self.script_dir, 'saved_results/loss_v_time_data')
             output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.txt")
@@ -443,6 +451,7 @@ class PlotResults:
         plt.title('Error Bars for Training Time and Validation Loss Across Epochs')
         plt.legend()
         plt.grid(True)
+        plt.show()
     
         # Optionally save
         if save:
@@ -455,7 +464,7 @@ class PlotResults:
                 "std_loss_below": std_VL_below
             })
             output_dir = os.path.join(self.script_dir, 'saved_results/loss_v_time_data')
-            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}.csv")
+            output_path = os.path.join(output_dir, f"{self.filename}_SS{self.n_subsample}_epochs.csv")
             data.to_csv(output_path, index=False)
 
 
@@ -552,28 +561,7 @@ class PlotResults:
 
 
 
-    # moving_avg = np.zeros(N_EPOCHS)
-    # min_moving_avg = float('inf')
-    # moving_avg_len = 5
-    # min_index = 0
-    # break_iterations = 5
-    # for j in range(N_EPOCHS):
-    #     if j < moving_avg_len:
-    #         moving_avg[j] = np.mean(val_losses[i,:j+1])
-    #     else:
-    #         moving_avg[j] = np.mean(val_losses[i,j-moving_avg_len+1:j+1])
-
-    #     if moving_avg[j] < min_moving_avg:
-    #         min_moving_avg = moving_avg[j]
-    #         min_index = j
-
-    #     if min_index + break_iterations < j:
-    #         break
-
-    # val_loss_array = val_losses[i,:j]
-    # val_loss_min_index = np.argmin(val_loss_array)
-    # training_time[i] = cumulative_times[i,val_loss_min_index]
-    # val_loss[i] = val_losses[i,val_loss_min_index]
+  
 
 
 
