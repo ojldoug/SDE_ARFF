@@ -307,7 +307,7 @@ class SDEARFFTrain:
             for k in range(0, K - 1):
                 D = (np.linalg.norm(amp_prime[k, :]) / np.linalg.norm(amp[k, :])) ** param.gamma
                 if D >= self.rng.random():
-                    amp[k, :] = amp_prime[k, :]
+                    #amp[k, :] = amp_prime[k, :]
                     omega[:, k] = omega_prime[:, k]        
 
             amp = SDEARFFTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega, K)
