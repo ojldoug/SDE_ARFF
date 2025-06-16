@@ -307,7 +307,6 @@ class SDEARFFTrain:
             for k in range(0, K - 1):
                 D = (np.linalg.norm(amp_prime[k, :]) / np.linalg.norm(amp[k, :])) ** param.gamma
                 if D >= self.rng.random():
-                    #amp[k, :] = amp_prime[k, :]
                     omega[:, k] = omega_prime[:, k]        
 
             amp = SDEARFFTrain.get_amp(x_norm, y_norm, param.lambda_reg, omega, K)
@@ -396,7 +395,7 @@ class SDEARFFTrain:
         self.history['val_loss'] = SDEARFFTrain.get_loss(y_n_valid, y_np1_valid, x_valid, step_sizes_valid, drift=self.drift, diffusion=self.diff, diff_type=self.diff_type)
         self.history['true_loss'] = SDEARFFTrain.get_loss(y_n_valid, y_np1_valid, x_valid, step_sizes_valid, drift=true_drift, diffusion=true_diffusion, diff_type=self.diff_type)
         self.history['training_time'] = z_time + diff_vector_time + minima_time_drift + minima_time_diff
-
+        
         print(f"\rDrift RMSE: {self.history['drift_RMSE']}")
         print(f"\rDiffusion RMSE: {self.history['diffusion_RMSE']}")
         print(f"\rObserved loss: {self.history['loss']}")
